@@ -1,191 +1,164 @@
 module top_tb;
+  
+  parameter       NUMBER_OF_TEST_RUNS = 100;
+  parameter       CLK_FREQ_MHZ        = 200;
+  parameter       GLITCH_TIME_NS      = 20;
 
-  parameter NUMBER_OF_TEST_RUNS = 100;
-  parameter DATA_BUS_WIDTH      = 17;
+  localparam real NOT_ROUNDED         = GLITCH_TIME_NS / (1000 / CLK_FREQ_MHZ);
+  localparam      CLK_CYCLES          = $ceil(NOT_ROUNDED) - 2;
 
-  bit                          clk;
-  logic                        srst;
-  bit                          srst_done;
-
-  logic                        data;
-  logic                        data_val;
-
-  logic [DATA_BUS_WIDTH - 1:0] deser_data;
-  logic                        deser_data_val;
+  bit       clk;
+  logic     key;
+  logic     key_pressed_stb;
 
   // flag to indicate if there is an error
-  bit test_succeed;
+  bit       test_succeed;
+
+  typedef struct {
+    bit button_pressed;
+    int total_time;
+    int press_time;
+  } transaction_t;
 
   initial forever #5 clk = !clk;
 
   default clocking cb @( posedge clk );
   endclocking
 
-  initial 
-    begin
-      srst <= 1'b0;
-      ##1;
-      srst <= 1'b1;
-      ##1;
-      srst <= 1'b0;
-      srst_done = 1'b1;
-    end
-
-  deserializer #(
-    .DATA_BUS_WIDTH ( DATA_BUS_WIDTH   )
+  debouncer #(
+    .CLK_FREQ_MHZ      ( CLK_FREQ_MHZ    ),
+    .GLITCH_TIME_NS    ( GLITCH_TIME_NS  )
   ) DUT ( 
-    .clk_i            ( clk            ),
-    .srst_i           ( srst           ),
-    .deser_data_o     ( deser_data     ),
-    .deser_data_val_o ( deser_data_val ),
-    .data_i           ( data           ),
-    .data_val_i       ( data_val       )
+    .clk_i             ( clk             ),
+    .key_i             ( key             ),
+    .key_pressed_stb_o ( key_pressed_stb )
   );
 
-  typedef logic queued_data_t[$:DATA_BUS_WIDTH - 1];
+  mailbox #( transaction_t ) output_data    = new();
+  mailbox #( transaction_t ) input_data     = new();
+  mailbox #( transaction_t ) generated_data = new();
 
-  mailbox #( queued_data_t ) output_data    = new();
-  mailbox #( queued_data_t ) input_data     = new();
-  mailbox #( queued_data_t ) generated_data = new();
-
-  function void display_error ( input queued_data_t in,  
-                                input queued_data_t out
+  function void display_error ( input transaction_t in,  
+                                input transaction_t out
                               );
     $error( "expected values:%p, result value:%p", in, out );
 
   endfunction
 
-  task raise_transaction_strobe( logic data_to_send, int no_delay ); 
+  task raise_transaction_strobe( input int key_pressed ); 
     
-    // data comes at random moment
-    int delay;
-
-    delay = $urandom_range(10, 0) * !no_delay;
-    ##(delay);
-
-    data     = data_to_send;
-    data_val = 1'b1;
-    ## 1;
-    data     = '0;
-    data_val = 1'b0; 
+    #($urandom_range(3,0));
+    if ( key_pressed == CLK_CYCLES - 1 )
+      key = 1;
+    else
+      key = $urandom_range(1, 0);
+    if ( !key )
+      key_pressed += 1;    
 
   endtask
 
-  task compare_data ( mailbox #( queued_data_t ) input_data,
-                      mailbox #( queued_data_t ) output_data
+  task compare_data ( mailbox #( transaction_t ) input_data,
+                      mailbox #( transaction_t ) output_data
                     );
     
-    queued_data_t i_data;
-    queued_data_t o_data;
-
-    if ( input_data.num() != output_data.num() )
-      begin
-        $error("read and wrote amounts of data is not equal! r:%d, w:%d", output_data.num(), input_data.num() );
-        test_succeed = 1'b0;
-        return;
-      end
+    transaction_t i_data;
+    transaction_t o_data;
 
     while ( input_data.num() )
       begin
-        input_data.get( i_data );
-        output_data.get( o_data );
+        input_data.get(i_data);
+        output_data.get(o_data);
 
-        if ( i_data.size() != o_data.size() )
+        if ( o_data.button_pressed != i_data.button_pressed )
           begin
             display_error( i_data, o_data );
             test_succeed = 1'b0;
             return;
           end
-        
-        for ( int i = 0; i < DATA_BUS_WIDTH; i++ ) begin
-          if ( i_data[i] !== o_data[DATA_BUS_WIDTH - 1 - i] )
-            begin
-              display_error( i_data, o_data );
-              test_succeed = 1'b0;
-              return;
-            end
-        end
-      end
-    
+        else if ( o_data.press_time != i_data.press_time )
+          begin
+            display_error( i_data, o_data );
+            test_succeed = 1'b0;
+            return;
+          end
+      end    
   endtask
 
-  task generate_transactions ( mailbox #( queued_data_t ) generated_data );
+  task generate_transactions ( mailbox #( transaction_t ) generated_data );
     
-    queued_data_t data_to_send;
+    transaction_t data_to_send;
 
     repeat (NUMBER_OF_TEST_RUNS) 
       begin
-        data_to_send = {};
-
-        for ( int i = 0; i < DATA_BUS_WIDTH; i++ ) begin
-          data_to_send.push_back( $urandom_range( 1, 0 ) );
-        end
+        data_to_send.button_pressed = $urandom_range(1, 0);
+        if ( data_to_send.button_pressed )
+          begin
+            data_to_send.total_time = $urandom_range(CLK_CYCLES*20, CLK_CYCLES + 1);
+            data_to_send.press_time = $urandom_range(data_to_send.total_time - CLK_CYCLES, 0);
+          end
+        else
+          begin
+            data_to_send.total_time = $urandom_range(CLK_CYCLES*20, 0);
+            data_to_send.press_time = 'x;
+          end
 
         generated_data.put( data_to_send );
       end
 
   endtask
 
-  task send_data ( mailbox #( queued_data_t ) input_data,
-                   mailbox #( queued_data_t ) generated_data
+  task send_data ( mailbox #( transaction_t ) input_data,
+                   mailbox #( transaction_t ) generated_data
                  );
 
-    queued_data_t data_to_send;
-    queued_data_t exposed_data;
-    int           no_delay;
+    transaction_t data_to_send;
+    int           key_pressed;
 
     while ( generated_data.num() )
       begin
-        no_delay     = $urandom_range(1, 0); // randomly choose to ran transaction with no delays
-        exposed_data = {};
         generated_data.get( data_to_send );
-        
-        for ( int i = 0; i < DATA_BUS_WIDTH; i++ ) begin
-          raise_transaction_strobe( data_to_send[$], no_delay );
-          exposed_data.push_back( data_to_send.pop_back() );
-        end
+        key_pressed = 0;
 
-        input_data.put( exposed_data );
+        for (int i = 0; i < data_to_send.total_time; i++ )
+          begin
+            @( posedge clk );
+            if ( data_to_send.button_pressed &&
+                 i == data_to_send.press_time )
+              begin
+                #($urandom_range(4, 0));
+                key = 1'b0;
+              end
+            else if ( data_to_send.button_pressed &&
+                      i > data_to_send.press_time &&
+                      i < data_to_send.press_time + CLK_CYCLES )
+              continue;
+            else
+              raise_transaction_strobe(key_pressed);
+          end
+
+        input_data.put( data_to_send );
       end
 
   endtask
 
-  task read_data ( mailbox #( queued_data_t ) output_data );
+  task read_data ( mailbox #( transaction_t ) output_data );
     
-    queued_data_t recieved_data;
+    transaction_t recieved_data;
     int           time_without_data;
     
     forever
       begin
-        recieved_data = {};
-
         @( posedge clk );
-        if ( deser_data_val === 1'b1 )
-          begin
-            recieved_data     = { << { deser_data } };
-            time_without_data = 0;
-            output_data.put(recieved_data);
-          end
-        else
-          begin
-            if ( time_without_data == 11*DATA_BUS_WIDTH )
-              return;
-            else 
-              time_without_data += 1;
-          end
       end
 
   endtask
 
   initial begin
-    data         <= '0;
-    data_val     <= 1'b0;
     test_succeed <= 1'b1;
 
     generate_transactions( generated_data );
 
     $display("Simulation started!");
-    wait( srst_done );
     fork
       read_data( output_data );
       send_data( input_data, generated_data );
