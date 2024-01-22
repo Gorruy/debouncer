@@ -34,7 +34,8 @@ module debouncer #(
 
   always_ff @( posedge clk_i )
     begin
-      if ( counter == CLK_CYCLES )
+      if ( counter == CLK_CYCLES &&
+           !first_reg && !second_reg )
         key_pressed_stb_o <= 1'b1;
       else
         key_pressed_stb_o <= 1'b0;

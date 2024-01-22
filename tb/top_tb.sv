@@ -1,8 +1,8 @@
 module top_tb;
   
   parameter       NUMBER_OF_TEST_RUNS = 100;
-  parameter       CLK_FREQ_MHZ        = 200;
-  parameter       GLITCH_TIME_NS      = 20;
+  parameter       CLK_FREQ_MHZ        = 100;
+  parameter       GLITCH_TIME_NS      = 50;
 
   localparam real NOT_ROUNDED         = GLITCH_TIME_NS / (1000 / CLK_FREQ_MHZ);
   localparam      CLK_CYCLES          = $ceil(NOT_ROUNDED) - 2;
